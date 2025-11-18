@@ -1,0 +1,229 @@
+# Kubernetes Setup Playbook (Master + Worker)
+- name: Install and configure Kubernetes cluster (Master + Workers)
+  hosts: all
+  become: yes
+  vars:
+    pod_network_cidr: "192.168.0.0/16"
+
+  tasks:
+    - name: Install required packages
+    # Installing dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+        state: present
+        update_cache: yes
+
+    - name: Disable swap
+      command: swapoff -a
+
+    - name: Remove swap entry from fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*swap)'
+        replace: '# \1'
+
+    - name: Load overlay module
+      modprobe:
+        name: overlay
+        state: present
+
+    - name: Load br_netfilter module
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Enable kernel params
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: "net.bridge.bridge-nf-call-iptables",  value: 1 }
+        - { name: "net.ipv4.ip_forward",                   value: 1 }
+        - { name: "net.bridge.bridge-nf-call-ip6tables",  value: 1 }
+
+    # Install containerd    
+    - name: Install containerd
+      apt:
+        name: containerd
+        state: present
+        update_cache: yes
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate containerd config file
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: Enable SystemdCgroup
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    # Install Kubernetes components
+    - name: Add Kubernetes APT key
+      apt_key:
+        url: https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
+        state: present
+
+    - name: Add Kubernetes repo
+      apt_repository:
+        repo: "deb https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /"
+        state: present
+
+    - name: Install dependencies for Kubernetes
+      apt:
+        name:
+          - socat
+          - conntrack
+          - ebtables
+          - ethtool
+          - iptables
+          - arptables
+          - cri-tools
+        state: present
+        update_cache: yes
+
+    - name: Unhold Kubernetes packages (if held)
+      shell: |
+        apt-mark unhold kubeadm kubelet kubectl 2>/dev/null || true
+      args:
+        warn: false
+
+    - name: Install kubeadm, kubelet, kubectl
+      shell: |
+        apt-get update
+        apt-get install -y kubeadm kubelet kubectl --allow-change-held-packages --allow-downgrades
+      args:
+        warn: false
+        
+    - name: Ensure kubeadm exists
+      stat:
+        path: /usr/bin/kubeadm
+      register: kubeadm_check
+
+    - name: Fix missing kubeadm (if installed in /usr/local/bin)
+      file:
+        src: /usr/local/bin/kubeadm
+        dest: /usr/bin/kubeadm
+        state: link
+      when: not kubeadm_check.stat.exists and ansible_facts['distribution'] == "Ubuntu"
+
+    - name: Enable kubelet
+      systemd:
+        name: kubelet
+        enabled: yes
+
+# Master Node Setup
+- name: Configure Kubernetes Master Node
+  hosts: master
+  become: yes
+  vars:
+    pod_network_cidr: "192.168.0.0/16"
+
+  tasks:
+    - name: Reset stuck API server and cleanup
+      shell: |
+        systemctl stop kubelet || true
+        PID=$(ss -tulpn | grep ':6443' | awk -F'[,=]' '{print $3}')
+        if [ -n "$PID" ]; then kill $PID || true; kill -9 $PID || true; fi
+        rm -rf /etc/kubernetes/manifests/* /etc/kubernetes/pki/*
+        systemctl restart containerd
+      args:
+        warn: false
+
+    - name: Wait for port 6443 to be free
+      wait_for:
+        port: 6443
+        state: absent
+        timeout: 30
+
+    - name: Initialize Kubernetes Master
+      command: kubeadm init --pod-network-cidr {{ pod_network_cidr }}
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create .kube directory
+      file:
+        path: /root/.kube
+        state: directory
+        mode: 0700
+
+    - name: Copy admin.conf
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+
+    - name: Install Calico network plugin
+      command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: Generate join command
+      command: kubeadm token create --print-join-command
+      register: join_cmd
+
+    - name: Save join command
+      set_fact:
+        join_command: "{{ join_cmd.stdout }}"
+
+# Worker Node Setup
+- name: Join Worker Nodes to Cluster
+  hosts: worker
+  become: yes
+
+  tasks:
+    - name: Wait for join_command from master
+      pause:
+        seconds: 20
+
+    - name: Join worker to cluster
+      command: "{{ hostvars['master1']['join_command'] }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+# Final Verification - Show Cluster Nodes
+- name: Verify cluster status
+  hosts: master
+  become: yes
+  tasks:
+
+    - name: Wait for all nodes to be Ready
+      shell: |
+        for i in {1..20}; do
+          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready" | wc -l)
+          if [ "$NOT_READY" -eq 0 ]; then
+            exit 0
+          fi
+          sleep 6
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: Show Kubernetes Nodes
+      command: kubectl get nodes -o wide
+      register: node_status
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: Print cluster details
+      debug:
+        msg: "{{ node_status.stdout }}"

@@ -1,0 +1,108 @@
+---
+# Kubernetes Cleanup Playbook
+- name: Cleanup Kubernetes and containerd from all nodes
+  hosts: all
+  become: yes
+  tasks:
+    - name: Stop kubelet service
+      systemd:
+        name: kubelet
+        state: stopped
+      ignore_errors: yes
+
+    - name: Stop containerd service
+      systemd:
+        name: containerd
+        state: stopped
+      ignore_errors: yes
+
+    - name: Reset kubeadm (force reset)
+      command: kubeadm reset -f
+      ignore_errors: yes
+
+    - name: Remove CNI config directory
+      file:
+        path: /etc/cni/net.d
+        state: absent
+
+    - name: Remove Kubernetes directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /var/lib/kubelet
+        - /var/lib/dockershim
+        - /var/run/kubernetes
+        - /root/.kube
+
+    - name: Remove kube binaries
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/bin/kubeadm
+        - /usr/bin/kubelet
+        - /usr/bin/kubectl
+
+    - name: Flush iptables (k8s network cleanup)
+      shell: |
+        iptables -F
+        iptables -X
+        iptables -t nat -F
+        iptables -t nat -X
+        iptables -t raw -F
+        iptables -t raw -X
+        iptables -t mangle -F
+        iptables -t mangle -X
+      ignore_errors: yes
+
+    #  FIX: DO NOT DELETE /run/containerd (busy mount shm)
+    - name: Remove containerd safe directories (excluding /run/containerd)
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/containerd
+        - /var/lib/containerd
+      ignore_errors: yes
+
+    - name: Delete network interfaces created by CNI
+      shell: |
+        ip link delete cni0 2>/dev/null || true
+        ip link delete flannel.1 2>/dev/null || true
+        ip link delete vxlan.calico 2>/dev/null || true
+        ip link delete tunl0 2>/dev/null || true
+        ip link delete docker0 2>/dev/null || true
+      ignore_errors: yes
+
+    - name: Remove Kubernetes apt repo
+      apt_repository:
+        repo: "deb https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /"
+        state: absent
+      ignore_errors: yes
+
+    - name: Remove Kubernetes packages
+      apt:
+        name:
+          - kubeadm
+          - kubelet
+          - kubectl
+          - containerd
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Autoremove unused packages
+      apt:
+        autoremove: yes
+
+    - name: Clean apt cache
+      apt:
+        update_cache: yes
+        autoclean: yes
+
+    - name: Print cleanup done message
+      debug:
+        msg: "Cleanup completed successfully. Node is ready for fresh installation!"
