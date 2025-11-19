@@ -1,0 +1,166 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "#000000",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "iteration": 162343,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "avg by(nodename) (rate(node_cpu_seconds_total{mode!='idle'}[1m])) * 100", "legendFormat": "{{nodename}}", "refId": "A"}
+      ],
+      "title": "Node CPU % (by nodename)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"legend": {"placement": "bottom"}},
+      "targets": [
+        {"expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100", "legendFormat": "{{nodename}}", "refId": "A"}
+      ],
+      "title": "Node Memory % Used (by nodename)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 6},
+      "id": 3,
+      "targets": [
+        {"expr": "node_load1", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "title": "1m Load (all nodes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 6},
+      "id": 4,
+      "targets": [
+        {"expr": "sum(kube_pod_container_status_restarts_total) by (namespace)", "legendFormat": "{{namespace}}", "refId": "A"}
+      ],
+      "title": "Pod Restarts by Namespace",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 6},
+      "id": 5,
+      "targets": [
+        {"expr": "kube_deployment_status_replicas_available{namespace=~\".*\"}", "legendFormat": "{{namespace}}/{{deployment}}", "refId": "A"}
+      ],
+      "title": "Deployment Replicas Available",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 10},
+      "id": 6,
+      "targets": [
+        {"expr": "sum(rate(container_cpu_usage_seconds_total[1m])) by (pod, namespace)", "legendFormat": "{{namespace}}/{{pod}}", "refId": "A"}
+      ],
+      "title": "Container CPU (cAdvisor) by Pod",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 10},
+      "id": 7,
+      "targets": [
+        {"expr": "sum(container_memory_working_set_bytes) by (pod, namespace)", "legendFormat": "{{namespace}}/{{pod}}", "refId": "A"}
+      ],
+      "title": "Container Memory (cAdvisor) by Pod",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 3, "w": 3, "x": 0, "y": 15},
+      "id": 8,
+      "targets": [
+        {"expr": "sum(jenkins_builds)", "legendFormat": "builds", "refId": "A"}
+      ],
+      "title": "Jenkins Builds (total)",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 3, "w": 3, "x": 3, "y": 15},
+      "id": 9,
+      "targets": [
+        {"expr": "jenkins_queue_size", "legendFormat": "queue", "refId": "A"}
+      ],
+      "title": "Jenkins Queue Size",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 3, "w": 3, "x": 6, "y": 15},
+      "id": 10,
+      "targets": [
+        {"expr": "sum(jenkins_executor_count) by(instance)", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "title": "Jenkins Executors",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 3, "w": 6, "x": 9, "y": 15},
+      "id": 11,
+      "targets": [
+        {"expr": "sum(node_filesystem_size_bytes - node_filesystem_avail_bytes) by(device, nodename) / sum(node_filesystem_size_bytes) by(device, nodename) * 100", "legendFormat": "{{nodename}}/{{device}}", "refId": "A"}
+      ],
+      "title": "Disk Usage %",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 32,
+  "style": "dark",
+  "tags": ["unified", "k8s", "jenkins"],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "label": "Prometheus source",
+        "query": "Prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"}
+      },
+      {
+        "name": "node",
+        "label": "Node (nodename)",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(node_uname_info, nodename)",
+        "current": {},
+        "multi": false,
+        "includeAll": true
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m"]},
+  "title": "Unified - K8s + Jenkins Overview",
+  "uid": "unified-k8s-jenkins",
+  "version": 1
+}
