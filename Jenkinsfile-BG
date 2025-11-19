@@ -1,0 +1,182 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE = "sham9394/cityzen"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        INFRA_REPO = "https://github.com/sham9394/infra-repo.git"
+        CODE_REPO = "https://github.com/sham9394/code-repo.git"
+        K8S_NAMESPACE = "default"
+        BLUE_FILE = "/home/root/workspace/Pipeline/K8s/Blue.yml"
+        GREEN_FILE = "/home/root/workspace/Pipeline/K8s/Green.yml"
+    }
+
+    stages {
+
+        stage('check Infrastructure..') {
+            agent { label 'Node' }
+            steps {
+                script {
+                    def status = sh(script: "kubectl cluster-info >/dev/null 2>&1", returnStatus: true)
+                    if (status != 0) {
+                        echo "Kubernetes cluster NOT found. Infrastructure setup will run........."
+                    } else {
+                        echo "Kubernetes cluster already exists. Skipping infra setup........."
+                    }
+                    env.CLUSTER_STATUS = "${status}"
+                    echo "DEBUG: Saved CLUSTER_STATUS=${env.CLUSTER_STATUS}"
+                }
+            }
+        }
+
+        stage('Setup Infrastructure..') {
+            when {
+                expression { env.CLUSTER_STATUS != "0" }
+            }
+            steps {
+                script {
+                    echo "🚀 Running Ansible playbook to create Kubernetes cluster........."
+                    git url: "${INFRA_REPO}", branch: 'main'
+                    sh '''
+                        set -e
+                        cd "$WORKSPACE/Ansible"
+                        ansible-playbook -i inventory.ini cleanup-k8s.yml
+                        ansible-playbook -i inventory.ini k8s-clusters-setup.yml
+                    '''
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            agent { label 'Node' }
+            steps {
+                echo "Pulling code-repo and preparing Docker........."
+                git url: "${CODE_REPO}", branch: 'main'
+                sh '''
+                    set -e
+                    if ! command -v docker >/dev/null; then
+                        sudo apt-get update -y
+                        sudo apt-get install -y docker.io
+                        sudo systemctl enable --now docker
+                    fi
+                '''
+                sh '''
+                    set -e
+                    echo "🚀 Building Docker image ${IMAGE}:${IMAGE_TAG}"
+                    cd frontend
+                    docker build -t ${IMAGE}:${IMAGE_TAG} .
+                '''
+            }
+        }
+
+        stage('Trivy Scan') {
+            agent { label 'Node' }
+            steps {
+                sh '''
+                    set -e
+                    echo "Scanning local image: ${IMAGE}:${IMAGE_TAG}........"
+                    C=$WORKSPACE/trivy-cache
+                    mkdir -p $C
+
+                    docker run --rm -v $C:/root/.cache/ aquasec/trivy image --download-db-only
+
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v $C:/root/.cache/ \
+                        -v $WORKSPACE:/w \
+                        aquasec/trivy image \
+                        --format json -o /w/trivy.json \
+                        ${IMAGE}:${IMAGE_TAG}
+
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v $C:/root/.cache/ \
+                        aquasec/trivy image \
+                        --exit-code 1 --severity HIGH,CRITICAL \
+                        ${IMAGE}:${IMAGE_TAG}
+                '''
+            }
+            post {
+                always { archiveArtifacts artifacts: 'trivy.*', fingerprint: true }
+            }
+        }
+
+        stage('Push Docker Image') {
+            agent { label 'Node' }
+            steps {
+                echo "Pushing Docker image and tagging as latest......."
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub',
+                        usernameVariable: 'DOCKERHUB_USERNAME',
+                        passwordVariable: 'DOCKERHUB_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+                        echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin
+                        docker push ${IMAGE}:${IMAGE_TAG}
+                        docker tag ${IMAGE}:${IMAGE_TAG} ${IMAGE}:latest
+                        docker push ${IMAGE}:latest
+                        docker rmi ${IMAGE}:${IMAGE_TAG} || true
+                        docker rmi ${IMAGE}:latest || true
+                    '''
+                }
+            }
+        }
+
+        stage('Detect Old BLUE Image') {
+            agent { label 'Node' }
+            steps {
+                script {
+                    def oldImage = sh(
+                        script: "kubectl get deployment cityzen-blue -o jsonpath='{.spec.template.spec.containers[0].image}' || echo none",
+                        returnStdout: true
+                    ).trim()
+
+                    if (oldImage == "none" || oldImage == "") {
+                        oldImage = "${IMAGE}:${IMAGE_TAG}"  // fallback for first deploy
+                    }
+
+                    env.BLUE_IMAGE = oldImage
+                    echo "Detected BLUE Image = ${BLUE_IMAGE}"
+                }
+            }
+        }
+
+        stage('Update Blue & Green YAML') {
+            agent { label 'Node' }
+            steps {
+                sh '''
+                    set -e
+                    sed -i "s|REPLACE_BLUE_IMAGE|${BLUE_IMAGE}|" ${BLUE_FILE}
+                    sed -i "s|REPLACE_GREEN_IMAGE|${IMAGE}:${IMAGE_TAG}|" ${GREEN_FILE}
+                '''
+            }
+        }
+
+        stage('Deploy Blue + Green') {
+            agent { label 'Node' }
+            steps {
+                sh '''
+                    set -e
+                    kubectl apply -f ${BLUE_FILE} -n ${K8S_NAMESPACE}
+                    kubectl apply -f ${GREEN_FILE} -n ${K8S_NAMESPACE}
+
+                    kubectl rollout status deployment/cityzen-blue -n ${K8S_NAMESPACE}
+                    kubectl rollout status deployment/cityzen-green -n ${K8S_NAMESPACE}
+                '''
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "Pipeline completed successfully.........!"
+        }
+        failure {
+            echo "Pipeline failed. Check logs!........."
+        }
+    }
+}
