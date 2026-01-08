@@ -193,7 +193,7 @@
         seconds: 20
 
     - name: Join worker to cluster
-      command: "{{ hostvars['master1']['join_command'] }}"
+      command: "{{ hostvars['master']['join_command'] }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
 
